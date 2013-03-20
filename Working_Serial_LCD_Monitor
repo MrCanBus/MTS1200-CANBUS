@@ -1,0 +1,1005 @@
+#include <PString.h>
+//#include <SD.h>       /* Library from Adafruit.com */
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include "mcp2515.h"
+
+
+
+SoftwareSerial mySerial(3, 6); // RX, TX
+
+#define DEFAULT_CAN_ID  0x0555
+// added for filter and can changes
+#define MASK_0 0x20
+#define MASK_1 0x24
+#define FILTER_0 0x00
+#define FILTER_1 0x04
+#define FILTER_2 0x08
+#define FILTER_3 0x10
+#define FILTER_4 0x14
+#define FILTER_5 0x18
+
+//Pin definitions
+#define SCK_PIN   13  //Clock pin
+#define MISO_PIN  12  //Mater in Slave output
+#define MOSI_PIN  11  //Master out Slave input
+#define SS_PIN    10  //SS pin
+#define SD_PIN    9  //pin for SD card control
+#define RESET_PIN 2
+#define INT_PIN 3
+
+//Joystick pin definitions
+#define UP     A1
+#define RIGHT  A2
+#define DOWN   A3
+#define CLICK  A4
+#define LEFT   A5
+
+#define WRITE 0x02 //read and write comands for SPI
+
+//LED pins
+int led = 8;
+int led2 = 7;
+
+/* Operation Modes */
+enum CAN_MODE {
+  CAN_MODE_NORMAL, 		/* Transmit and receive as normal */
+  CAN_MODE_SLEEP,	        /* Low power mode */
+  CAN_MODE_LOOPBACK,		/* Test mode; anything "sent" appears in the receive buffer without external signaling */  							 
+  CAN_MODE_LISTEN_ONLY,         /* Receive only; do not transmit */
+  CAN_MODE_CONFIG,		/* Default; Allows writing to config registers */
+  CAN_MODE_COUNT
+};
+
+//CanMessage message;
+int i;
+uint8_t  message;
+
+/** Array containing the ints of the CAN message.  This array
+ * may be accessed directly to set or read the CAN message.
+ * This field can also be set by the setTypeData functions and
+ * read by the getTypeData functions. */
+uint8_t data[8];
+
+/** A flag indicating whether this is an extended CAN message */
+uint8_t extended;
+
+/** The ID of the CAN message.  The ID is 29 ints long if the
+ * extended flag is set, or 11 ints long if not set. */
+uint32_t id;
+
+/** The number of ints in the data field (0-8) */
+uint8_t len;
+
+//array to hold extracted parameter names
+char* CAN_Char[33] = {
+  "RPM",	//0
+  "APS1",	//1
+  "APS2",	//2
+  "TPS2",	//3
+  "Brak",	//4
+  "Ind",	//5
+  "F_S1",	//6
+  "F_S2",	//7
+  "F_Sp",	//8
+  "F_C",	//9
+  "F_R",	//10
+  "R_C",	//11
+  "R_R",	//12
+  "R_PC",	//13
+  "Idle",	//14
+  "MAP",	//15
+  "O2_1",	//16
+  "O2_2",	//17
+  "P_1",	//18
+  "P_2",	//19
+  "P_3",	//20
+  "P_4",	//21
+  "En_T",	//22
+  "Am_T",	//23
+  "B_V",	//24
+  "ON", 	//25
+  "Gear",	//26
+  "R_Sp",	//27
+  "DTC",	//28
+  "TPS",	//29
+  "Mode",	//30
+  "R_PF",	//31
+  "R_PE"	//32
+}; 
+
+//array to hold  extracted parameter values
+int CAN_P[33];
+//int CAN_P[33] = {
+//3451,	//0	  "RPM",
+//123,	//1	  "APS1",
+//121,	//2	  "APS2",
+//118,	//3	  "TPS2",
+//1,	//4	  "Brak",
+//4,	//5	  "Ind",
+//41235,	//6	  "F_S1",
+//12453,	//7	  "F_S2",
+//1111,	//8	  "F_Sp",
+//1,	//9	  "F_C",
+//123,	//10	  "F_R",
+//32,	//11	  "R_C",
+//211,	//12	  "R_R",
+//134,	//13	  "R_PC",
+//70,	//14	  "Idle",
+//4334,	//15	  "MAP",
+//234,	//16	  "O2_1",
+//123,	//17	  "O2_2",
+//123,	//18	  "P_1",
+//123,	//19	  "P_2",
+//123,	//20	  "P_3",
+//123,	//21	  "P_4",
+//100,	//22	  "En_T",
+//50,	//23	  "Am_T",
+//123,	//24	  "B_V",
+//8,	//25	  "ON", 
+//1,	//26	  "Gear",
+//3464,	//27	  "R_Sp",
+//8,	//28	  "DTC",
+//123,	//29	  "TPS",
+//9,	//30	  "Mode",
+//0,	//31	  "R_PF"
+//0,	//32	  "R_PE"
+//};
+
+const byte RPM_Rounding = 50;
+int Sus_Old[4];
+byte Sus[4];
+boolean UpdateSus = false;
+
+/* LCD Display control */
+const byte LCD_Lines = 4;
+const byte LCD_Cols = 20;
+unsigned long currentTime; 
+unsigned long cDisplayTime; 
+unsigned long cJoystickTime; 
+unsigned long counter=0;
+const int DisplayDelay = 250;
+const int JoystickDelay = 300;
+
+const byte c[6][4] = {
+//lineNo, col_label1, ":", value1
+{2,1,5,6},
+{3,1,5,6},
+{4,1,5,6},
+//lineNo, col_label2, ":", value2
+{2,11,15,16},
+{3,11,15,16},
+{4,11,15,16}
+};  //array holding cursor positions for the parameter display  1=line, 2=Char position, 3=':' position
+
+//counter to chose which parameter to display on LCD
+//byte x[6] = {1,29,26,0,14,15};  //engine 
+byte x[6] = {9,10,31,11,12,32}; //suspension settings
+byte y = 0;
+
+
+//Sd2Card card;
+//SdVolume volume;
+//SdFile root;
+//SdFile file;
+
+
+//************************ Setup ****************************
+void setup()
+{
+
+  // set the slaveSelectPin as an output 
+  pinMode(SCK_PIN,OUTPUT);
+  pinMode(MISO_PIN,INPUT);
+  pinMode(MOSI_PIN, OUTPUT);
+  pinMode(SS_PIN, OUTPUT);
+  pinMode(RESET_PIN,OUTPUT);
+  pinMode(INT_PIN,INPUT);
+  pinMode(led,OUTPUT); //setup LED
+  pinMode(led2,OUTPUT); //setup LED
+
+  digitalWrite(INT_PIN,HIGH);
+
+  //Set up Joystick Pins
+  pinMode(UP,INPUT);
+  pinMode(DOWN,INPUT);
+  pinMode(LEFT,INPUT);
+  pinMode(RIGHT,INPUT);
+  pinMode(CLICK,INPUT);
+
+  /* Enable internal pull-ups on JS pins */
+  digitalWrite(UP, HIGH);       
+  digitalWrite(DOWN, HIGH);
+  digitalWrite(LEFT, HIGH);
+  digitalWrite(RIGHT, HIGH);
+  digitalWrite(CLICK, HIGH);
+
+  Serial.begin(9600);    //serial port for PC or BTserial debugging
+  delay(800);   
+  mySerial.begin(9600);  //software serial port for LCD
+  Serial.println();
+  Serial.println("Set-up started");
+  Serial.println("Beginning CAN in listen only mode");
+  // initialize CAN bus
+  CAN_begin(MCP2515_SPEED_500000);  // set can baud rate
+  CAN_setMode (CAN_MODE_LISTEN_ONLY); // set can mode
+
+
+
+  LCDSize(LCD_Lines,LCD_Cols);
+  LCDBackLight(200);
+  LCDClear();
+  LCDPrintAt(1,1,"MTS1200 CAN_Monitor ");
+  Serial.println("Set-up complete");
+}//end setup
+
+
+//----------------------------------------------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------------------------------------
+void loop(){
+    
+  Serial.println("Loop started");
+  
+  LCDClear();
+  LCDPrintAt(1,1,"MTS1200 CAN_Monitor ");
+  LCDPrintAt(2,1,"CAN not available   ");      
+  LCDPrintAt(3,1,"waiting for CAN.... ");  
+  digitalWrite(led,HIGH);  //D8 light means waiting for Can to be connected
+ 
+  while(!CAN_available()) {
+    currentTime = millis(); 
+    if(currentTime >= (cDisplayTime + 1000)){ 
+      char ascii[32]; 
+      sprintf(ascii,"Waiting %-7.0d",counter); 
+      LCDPrintAt(4,1,ascii);
+      Serial.println(ascii);
+      counter++; 
+      cDisplayTime = currentTime; // Updates cloopTime
+    }
+  } //waiting for Canbus to be connected
+
+  //when CAN is available
+  Serial.println("CAN Connected");
+  LCDPrintAt(2,1,"CAN Connected       ");  
+  LCDClearLine(3);      
+  LCDClearLine(4);     
+  
+  delay(1000);
+  
+  LCDClear();
+  LCDPrintAt(1,1,"Pos.: ");   
+  LCDPrintAt(1,10,"Param: "); 
+  LCDPrintAt(1,7,String(y+1));   
+  Update_x(); 
+  Update_Labels();
+
+  currentTime = millis(); 
+  cDisplayTime = currentTime; 
+
+  CAN_Capture();
+
+}//end loop
+
+
+
+//----------------------------------------------------------------------------------------------------------------
+void CAN_Capture (){
+  while(1){
+    if (CAN_available()) {  //is a message recieved
+      currentTime = millis(); 
+      CAN_getMessage (); //subroutine for extracting message from buffer
+      CAN_processMsg ();
+      if(currentTime >= (cDisplayTime + DisplayDelay)){ 
+        Update_Values();
+        cDisplayTime = currentTime; // Updates cloopTime
+      } //end if
+      if(currentTime >= (cJoystickTime + JoystickDelay)){ 
+        Monitor_Joystick();
+      } //end if
+    }//end void Update_Parameters
+  }//end while
+}//end void CAN_Capture
+//-----------------------------------------------------------------------------------------------
+
+
+//----------------------------------------------------------------------------------------------------------------  
+//----------------------------------------------------------------------------------------------------------------  
+void Monitor_Joystick(){
+      //Serial.print("Monitoring Joystick---------------");  
+      //check if it should toggle the display
+      if(digitalRead(RIGHT) == 0){ // Toggle display RIGHT
+          //Serial.println("RIGHT");  
+          if(x[y]<32) x[y]++;
+            Update_x();    
+            Update_Labels();
+            Update_Values();
+            cJoystickTime = currentTime; // Updates cloopTime
+      }//end if right    
+//----------------------------------------------------------------------------------------------------------------      
+      //check if it should toggle the display
+      else if(digitalRead(LEFT) == 0){ // Toggle display RIGHT
+          //Serial.println("LEFT");
+          if(x[y]>0) x[y]--;
+            Update_x();    
+            Update_Labels();
+            Update_Values();
+            cJoystickTime = currentTime; // Updates cloopTime
+      }//end if left       
+//----------------------------------------------------------------------------------------------------------------      
+      //check if it should toggle the display
+      else if(digitalRead(UP) == 0){ // Toggle display RIGHT
+          //Serial.println("UP");
+          if(y<5){
+            y++;
+            LCDPrintAt(1,7,String(y+1));   
+            Update_x();       
+            cJoystickTime = currentTime; // Updates cloopTime             
+          }
+      }//end if left    
+//----------------------------------------------------------------------------------------------------------------      
+      //check if it should toggle the display
+      else if(digitalRead(DOWN) == 0){ // Toggle display RIGHT
+          //Serial.println("DOWN");      
+          if(y>0){
+            y--;
+            LCDPrintAt(1,7,String(y+1));   
+            Update_x();           
+            cJoystickTime = currentTime; // Updates cloopTime             
+          }
+      }//end if left    
+   //else Serial.println();   
+} //end Monitor_Joystick
+
+//-----------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------
+void Update_x(){
+
+  char buffer[3];
+  sprintf(buffer, "%.2d", x[y]);
+  //PString(buffer, sizeof(buffer), x[y]);
+  LCDPrintAt(1,17,buffer);   
+}  //end Update_x
+
+//-----------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------
+void Update_Labels(){
+//updates the 6 labels on the parameter display.  position determined by the array c[][]
+
+  char buffer[5];  
+    for (int i=0; i<6; i++) {
+      sprintf(buffer, "%-4s", CAN_Char[x[i]]);
+      //PString(buffer, sizeof(buffer), CAN_Char[x[i]]);
+      LCDPrintAt(c[i][0],c[i][1],buffer);  //label_1
+      LCDPrintAt(c[i][0],c[i][2],":");  //label_1 ":"
+
+//      Serial.print("***************");
+//      Serial.print("i: ");
+//      Serial.print(i);
+//      Serial.print(":");
+//      Serial.print(c[i][0]);
+//      Serial.print(",");
+//      Serial.print(c[i][1]);
+//      Serial.print(",");
+//      Serial.println(buffer);    
+     
+    }     
+}//end Update_Header 
+//-----------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------
+void Update_Values(){
+  //Serial.println("Updating Values: ----------------"); 
+  char buffer[5];  
+  for (int i=0; i<6; i++) {
+
+    switch (x[i]){
+      case 4://brake
+        if (CAN_P[x[i]]==1) sprintf(buffer, "%4s", "STOP");
+        else sprintf(buffer, "%4s", "----");
+        break;
+      case 5://indicator
+        if (CAN_P[x[i]]==4) sprintf(buffer, "%4s", "LH  ");
+        else if(CAN_P[x[i]]==8) sprintf(buffer, "%4s", "RH  ");
+        else sprintf(buffer, "%4s", "----");      
+        break;
+//      case 22://engine Temp
+//        
+//        break;
+//      case 23://Ambient Temp
+//        
+//        break;
+//      case 24://battery voltage
+//        buffer = char(int(CAN_P[x[i]]/10))+ '.'+char((CAN_P[x[i]]%10));
+//        break;
+      case 30://mode
+        if (CAN_P[x[i]]==5) sprintf(buffer, "%4s", "150H");
+        else if(CAN_P[x[i]]==1) sprintf(buffer, "%4s", "150L");
+        else if(CAN_P[x[i]]==9) sprintf(buffer, "%4s", "100-");
+        else sprintf(buffer, "%4s", "----");               
+        break;
+      default:
+        sprintf(buffer, "%4d", CAN_P[x[i]]);
+        //PString(buffer, sizeof(buffer), CAN_P[x[i]]);
+
+
+
+//    Serial.print(y);
+//    Serial.print(": ");
+//    Serial.print(i);
+//    Serial.print(": ");
+//    Serial.print(x[i]);
+//    Serial.print(": ");
+//    Serial.print(CAN_P[x[i]]);    
+//    Serial.print(": ");
+//    Serial.println(buffer);  
+  }//end switch 
+  
+  LCDPrintAt(c[i][0],c[i][3],buffer);
+  }//end for
+}//end Update_Display  
+
+
+
+//-----------------------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------
+void CAN_processMsg(){
+//----------------------------------------------------------------------------------------------------------------
+int Buffer;
+    //populate the CAN_P array with extracted parameters
+    switch (id) {
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x80:
+              Buffer=(data[5]*256) + data[6];
+              CAN_P[0] = int(Buffer/RPM_Rounding)*RPM_Rounding;  //RPM 
+              CAN_P[1] = data[0];                                //aps1
+              CAN_P[2] = data[1];                                //aps2    
+              CAN_P[3] = data[7];                                //tps2 
+        break;
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x20:
+              Buffer = int(data[0]/16);         //Lights
+              if ((Buffer%2)==0){
+                CAN_P[4] = 0;                   //Brake
+                CAN_P[5] = Buffer;              //Indicator
+              }
+              else {
+                CAN_P[4] = 1;                   //Brake
+                CAN_P[5] = Buffer-1;            //Indicator              
+              }  
+              CAN_P[6] = data[1];                  // Fspeed_1
+              CAN_P[7] = data[2];                  // Fspeed_2
+              CAN_P[8] = (CAN_P[6]*256)+CAN_P[7];  //Fspeed 
+ 
+              Sus[0] = int(data[4]/16);           // ARBID 20 B4(1)  F_Comp    *   9 
+              Sus[1] = data[3];                   // ARBID 20 B3     F_Rebound *   10
+              Sus[2] = int(data[5]/16);           // ARBID 20 B5(1)  R_Comp    *   11
+              Sus[3] = data[4]%16;                // ARBID 20 B4(2)  R_Rebound *   12      
+ 
+              for (int i=0; i<=3; i++) {
+                if (Sus[i]!=Sus_Old[i]) UpdateSus = true;
+              }
+              if (UpdateSus == true) Update_Sus();       
+
+              CAN_P[13] = int(data[5])%16;               //R_Preload_cmd  
+              
+        break;
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x150:
+              CAN_P[14] = data[3];  				//Idle_Cont 
+              CAN_P[15] = ((data[6]%16)*256) + data[7];  	//MAP 
+              CAN_P[16] = data[1];                              //O2_1 
+              CAN_P[17] = data[2];                              //O2_2               
+        break;        
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x160:
+              CAN_P[18] = data[2];  //Param_1 
+              CAN_P[19] = data[3];  //Param_2 
+              CAN_P[20] = data[4];  //Param_3 
+              CAN_P[21] = data[5];  //Param_4 
+        break;  
+    //----------------------------------------------------------------------------------------------------------------          
+      case 0x100:
+              CAN_P[22] = data[3]-40;   //Eng_Temp 
+              CAN_P[23] = data[5]-40;   //Amb_Temp 
+	      CAN_P[24] = data[4];      //Batt_v *
+              CAN_P[25] = data[2];      //On_Start_Off 
+        break;  
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x18:
+              CAN_P[26] = (int(data[4]/16)-1)/2;               //gearPOS 
+              CAN_P[27] = (((data[4]%16)*256) + data[5])*0.15;  //Rspeed 
+              Buffer = data[7]%16;                             // minus 8 will throw an error whilst the bike is initialising as values lower than 4 are produced      dtc 
+              if (Buffer >=8) CAN_P[28] = Buffer-8;  
+                else CAN_P[28] = 0;  
+              CAN_P[29] =  data[1];                            //TPS1          
+        break;          
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x300:
+              CAN_P[30] = data[6]%16;                          // Eng_Mode*
+        break;            
+    //----------------------------------------------------------------------------------------------------------------
+      case 0x360:
+              Buffer = int((data[2]+8)/16)+1;                  //R_Preload_fdbk
+              CAN_P[31] = Buffer;
+              CAN_P[32] = data[2]-((Buffer-1)*16);             //R_Preload_fdbk_Error
+	  break; 
+    }//end switch
+    //----------------------------------------------------------------------------------------------------------------  
+}//end CAN_processMsg
+
+
+//----------------------------------------------------------------------------------------------------------------  
+//----------------------------------------------------------------------------------------------------------------  
+void Update_Sus(){
+  
+  byte FR1, FR2, FC1, FC2, RR1, RR2, RC1;
+  
+  for (int i=0; i<=3; i++) {
+    Sus_Old[i]=Sus[i];
+  }
+  
+  FR1 = ((Sus[1]-(Sus[1]%8))/8)+1;
+  FR2 = (Sus[1]%8)*4;
+  FC1 = ((Sus[0]-(Sus[0]%4))/4)+1;
+  FC2 = (Sus[0]%4)*8;
+  RR1 = ((Sus[3]-(Sus[3]%2))/2)+1;
+  RR2 = (((Sus[3]%2)%2)*16)+1;
+  RC1 = (Sus[2]%16);
+
+  CAN_P[9] = FC1+FR2;      //FC
+  CAN_P[10] = FR1;         //FR
+  CAN_P[11] = RC1+RR2;     //RC
+  CAN_P[12] = RR1+FC2;     //RR
+
+  UpdateSus = false;
+  
+} //end Print_Suss
+
+
+//----------------------------------------------------------------------------------------------------------------  
+//----------------------------------------------------------------------------------------------------------------  
+//LCD Serial Function
+void LCDPrintAt(int ln, int col, String Str ){
+//prints at a specified cursor position
+    mySerial.write(2);
+    mySerial.write(ln);
+    mySerial.write(col);  
+    mySerial.write(0xFF); 
+
+    mySerial.write(1);
+    mySerial.print(Str);
+    mySerial.write(0xFF);  
+}//end LCDPrintAt
+//-----------------------------------------------------------------------------------------------
+void LCDPrint(String Str ){
+  char buf[32];
+  sprintf(buf, "%-20s", Str);
+    mySerial.write(1);
+    mySerial.print(buf);
+    mySerial.write(0xFF);  
+}//end LCDPrint
+//-----------------------------------------------------------------------------------------------
+void LCDClear(){
+//clears the LCD
+  mySerial.write(4);
+  mySerial.write(0xFF);   
+}//end LCDClear
+//-----------------------------------------------------------------------------------------------
+void LCDBackLight(int Back){  
+  // Set backlight between 0 and 250
+  if (Back > 250) Back = 250;
+  mySerial.write(7);
+  mySerial.write(Back);  
+  mySerial.write(0xFF);  
+}//end LCDBackLight
+//-----------------------------------------------------------------------------------------------
+void LCDSize(int Lines, int Cols){  
+//defines the size of the LCD
+  mySerial.write(5);
+  mySerial.write(Lines);
+  mySerial.write(Cols);
+  mySerial.write(0xFF); 
+}//end LCDSize
+//-----------------------------------------------------------------------------------------------
+void LCDClearLine(int line){
+//clears a specific line    
+    mySerial.write(3);
+    mySerial.write(line);
+    mySerial.write(0xFF); 
+}//end LCDClearLine
+//-----------------------------------------------------------------------------------------------
+void LCDCursor(int ln, int col){  
+// Moves the cursor to a specific line & column 
+ mySerial.write(2); 
+ mySerial.write(ln); 
+ mySerial.write(col); 
+ mySerial.write(0xFF); 
+}//end LCDCursor
+//-----------------------------------------------------------------------------------------------
+
+
+// **************************** Reset_Variables *******************
+void Reset_Variables(){
+  for (int i=0; i<=3; i++) {
+    Sus_Old[i]=NULL;
+    Sus[i]=NULL;
+  }  
+  for (int i=0; i<=3; i++) {
+    CAN_P[i]=NULL;
+  }
+}//end Reset_Variables()
+
+
+
+//*********************** Can cpp  ***************************************
+/*
+ * Copyright (c) 2010-2011 by Kevin Smith <faz@fazjaxton.net>
+ * MCP2515 CAN library for arduino. */
+
+void CAN_CanMessage ()
+{
+  extended = 0;
+  id = DEFAULT_CAN_ID;
+  len = 0;
+}
+// **************************** setintData *******************
+void CAN_setintData (int b)
+{
+  len = 1;
+  data[0] = b;
+}
+
+//*******************  setIntData  ***************************
+void setIntData (int i)
+{
+  len = 2;
+
+  /* Big-endian network int ordering */
+  data[0] = i >> 8;
+  data[1] = i & 0xff;
+}
+
+//******************* setLongData  ***************************
+void CAN_setLongData (long l)
+{
+  len = 4;
+
+  /* Big-endian network int ordering */
+  data[0] = (l >> 24) & 0xff;
+  data[1] = (l >> 16) & 0xff;
+  data[2] = (l >>  8) & 0xff;
+  data[3] = (l >>  0) & 0xff;
+}
+
+//*********************** setData  *****************************
+void CAN_setData (const uint8_t *data, uint8_t len)
+{
+  int i;
+
+  //  this->len = len;
+  len = len;
+  for (i=0; i<len; i++) {
+    //    this->data[i] = data[i];
+
+  }
+}
+
+//*********************** setData  **************************
+void CAN_setData (const char *data, uint8_t len)
+{
+  CAN_setData ((const uint8_t *)data, len);
+}
+
+//********************* send  ******************************
+void CAN_send ()
+{
+  mcp2515_set_msg (0, id, data, len, extended);
+  mcp2515_request_tx (0);
+}
+
+//****************** getintFromData **********************
+
+int CAN_getintFromData()
+{
+  return data[0];
+}
+
+//**************** getIntFromData ************************
+int CAN_getIntFromData ()
+{
+  int val;
+
+  val |= (uint16_t)data[0] << 8;
+  val |= (uint16_t)data[1] << 0;
+
+  return val;
+}
+
+//**************** getLongFromData
+long CAN_getLongFromData ()
+{
+  long val;
+
+  val |= (uint32_t)data[0] << 24;
+  val |= (uint32_t)data[1] << 16;
+  val |= (uint32_t)data[2] <<  8;
+  val |= (uint32_t)data[3] <<  0;
+
+  return val;
+}
+
+//********************** getData *******************
+void CAN_getData (uint8_t *data)
+{
+  int i;
+
+  for (i=0; i<len; i++) {
+    //    data[i] = this->data[i];
+  }
+}
+
+//******************** getData ***********************
+void CAN_getData (char *data)
+{
+  CAN_getData ((uint8_t *)data);
+}
+
+/*
+ * CANClass
+ */
+
+//********************** Begin ***********************
+void CAN_begin(uint32_t bit_time) {
+  SPI.begin();
+  SPI.setDataMode(SPI_MODE0);
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setClockDivider(SPI_CLOCK_DIV4);
+
+  mcp2515_init (bit_time);
+
+  CAN_resetFiltersAndMasks();  
+}
+
+
+//******************************** reset filters and Masks  ****************
+// added to set filters -- from another program
+void CAN_resetFiltersAndMasks() {
+  //disable first buffer
+  CAN_setMaskOrFilter(MASK_0,   0b00000000, 0b00000000, 0b00000000, 0b00000000);
+  CAN_setMaskOrFilter(FILTER_0, 0b00000000, 0b00000000, 0b00000000, 0b00000000);
+  CAN_setMaskOrFilter(FILTER_1, 0b00000000, 0b00000000, 0b00000000, 0b00000000);
+
+  //disable the second buffer
+  CAN_setMaskOrFilter(MASK_1,   0b00000000, 0b00000000, 0b00000000, 0b00000000); 
+  CAN_setMaskOrFilter(FILTER_2, 0b00000000, 0b00000000, 0b00000000, 0b00000000);
+  CAN_setMaskOrFilter(FILTER_3, 0b00000000, 0b00000000, 0b00000000, 0b00000000); 
+  CAN_setMaskOrFilter(FILTER_4, 0b00000000, 0b00000000, 0b00000000, 0b00000000);
+  CAN_setMaskOrFilter(FILTER_5, 0b00000000, 0b00000000, 0b00000000, 0b00000000); 
+}
+
+//***************************** set mask or FIlter **********************
+void CAN_setMaskOrFilter(int mask, int b0, int b1, int b2, int b3) {
+  CAN_setMode(CAN_MODE_CONFIG); 
+  CAN_setRegister(mask, b0);
+  CAN_setRegister(mask+1, b1);
+  CAN_setRegister(mask+2, b2);
+  CAN_setRegister(mask+3, b3);
+  CAN_setMode(CAN_MODE_LISTEN_ONLY); 
+}
+
+//************************** Set register ******************************
+void CAN_setRegister(int reg, int value) {
+  //  mcp2515_write_reg (reg, value); this should be instead to write the registers
+  //static void mcp2515_write_reg (uint8_t addr, uint8_t buf)
+  // used from other program.  Replaced by above 
+  digitalWrite(SS_PIN, LOW);
+  delay(10);
+  SPI.transfer(WRITE);
+  SPI.transfer(reg);
+  SPI.transfer(value);
+  delay(10);
+  digitalWrite(SS_PIN, HIGH);
+  delay(10);
+
+}
+// end from another program
+
+
+
+///*********************** end ***********************
+void CAN_end() {
+  SPI.end ();
+}
+
+//********************* setMode *********************
+void CAN_setMode (uint8_t mode)
+{
+  mcp2515_set_mode (mode);
+}
+
+//******************** ready **********************
+uint8_t CAN_ready ()
+{
+  return mcp2515_msg_sent ();
+}
+
+//****************** Available *********************
+boolean CAN_available ()
+{
+  return (boolean)mcp2515_msg_received();
+}
+
+//***************** getMessage ***********************
+void CAN_getMessage ()
+{
+  uint8_t extended;
+  extended = mcp2515_get_msg (0, &id, data, &len);
+}
+// ************************** SD card Error this needs to be included for SD Card************************
+//void error_P(const char* str) {
+//  PgmPrint("error: ");
+//  SerialPrintln_P(str);
+//
+//  Serial.print("SD error");
+//
+//  if (card.errorCode()) {
+//    PgmPrint("SD error: ");
+//    Serial.print(card.errorCode(), HEX);
+//
+//    Serial.print(',');
+//    Serial.println(card.errorData(), HEX);
+//
+//  }
+//  while(1);
+//}
+
+//CANClass CAN;
+
+/*
+/**
+ * A class representing a single CAN message.  The message can be built
+ * using the send<Type>Data functions, or the ints of the message can
+ * be set directly by accessing the public data[] array.  This class is
+ * also used to retrieve a message that has been received.  The data
+ * can be read using the get<type>Data functions, or can be read directly
+ * by accessing the public data[] array.
+ */
+//class CanMessage {
+//    public:
+/** A flag indicating whether this is an extended CAN message */
+//        uint8_t extended;
+/** The ID of the CAN message.  The ID is 29 ints long if the
+ * extended flag is set, or 11 ints long if not set. */
+//        uint32_t id;
+/** The number of ints in the data field (0-8) */
+//        uint8_t len;
+/** Array containing the ints of the CAN message.  This array
+ * may be accessed directly to set or read the CAN message.
+ * This field can also be set by the setTypeData functions and
+ * read by the getTypeData functions. */
+//        uint8_t data[8];
+
+//        CanMessage();
+
+/**
+ * Simple interface to set up a CAN message for sending a int data
+ * type.  When received, this message should be unpacked with the
+ * getintData function.  This interface only allows one int to be
+ * packed into a message.  To pack more data, access the data array
+ * directly.
+ * @param b - The int to pack into the message.
+ */
+//        void setintData (int b);
+
+/**
+ * Simple interface to set up a CAN message for sending an int data
+ * type.  When received, this message should be unpacked with the
+ * getIntData function.  This interface only allows one int to be
+ * packed into a message.  To pack more data, access the data array
+ * directly.
+ * @param i - The int to pack into the message.
+ */
+//       void setIntData (int i);
+
+/**
+ * Simple interface to set up a CAN message for sending a long data
+ * type.  When received, this message should be unpacked with the
+ * getLongData function.  This interface only allows one long to be
+ * packed into a message.  To pack more data, access the data array
+ * directly.
+ * @param l - The long to pack into the message.
+ */
+//        void setLongData (long l);
+
+/**
+ * A convenience function for copying multiple ints of data into
+ * the message.
+ * @param data - The data to be copied into the message
+ * @param len  - The size of the data
+ */
+//        void setData (const uint8_t *data, uint8_t len);
+//        void setData (const char *data, uint8_t len);
+
+/**
+ * Send the CAN message.  Once a message has been created, this
+ * function sends it.
+ */
+//        void send();
+
+/**
+ * Simple interface to retrieve a int from a CAN message.  This
+ * should only be used on messages that were created using the
+ * setintData function on another node.
+ * @return The int contained in the message.
+ */
+//        int getintFromData ();
+
+/**
+ * Simple interface to retrieve an int from a CAN message.  This
+ * should only be used on messages that were created using the
+ * setIntData function on another node.
+ * @return The int contained in the message.
+ */
+//        int getIntFromData ();
+
+/**
+ * Simple interface to retrieve a long from a CAN message.  This
+ * should only be used on messages that were created using the
+ * setLongData function on another node.
+ * @return The long contained in the message.
+ */
+//        long getLongFromData ();
+
+/**
+ * A convenience function for copying multiple ints out of a
+ * CAN message.
+ * @param data - The location to copy the data to.
+ */
+//        void getData (uint8_t *data);
+//        void getData (char *data);
+//};
+
+//class CANClass {
+//	public:
+/**
+ * Call before using any other CAN functions.
+ * @param bit_time - Desired width of a single bit in nanoseconds.
+ *                   The CAN_SPEED enumerated values are set to
+ *                   the bit widths of some common frequencies.
+ */
+//		static void begin(uint32_t bit_time);
+
+/** Call when all CAN functions are complete */
+//		static void end();
+
+/**
+ * Set operational mode.
+ * @param mode - One of the CAN_MODE enumerated values */
+//		static void setMode(uint8_t mode);
+
+/** Check whether a message may be sent */
+//       static uint8_t ready ();
+
+/**
+ * Check whether received CAN data is available.
+ * @return True if a message is available to be retrieved.
+ */
+//        static boolean available ();
+
+/**
+ * Retrieve a CAN message.
+ * @return A CanMessage containing the retrieved message
+ */
+//        static CanMessage getMessage (); */
+
+
+
+
+
+
+
+
+
+
+
+
+
